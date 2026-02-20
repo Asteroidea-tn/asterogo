@@ -1,0 +1,119 @@
+package examples
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect/pgdialect"
+	"github.com/uptrace/bun/driver/pgdriver"
+
+	encryption "pkg_crypt"
+)
+
+// User model with encrypted fields
+type User struct {
+	bun.BaseModel `bun:"table:users,alias:u"`
+
+	ID        int64     `bun:"id,pk,autoincrement" json:"id"`
+	Name      string    `bun:"name" json:"name"`
+	Email     string    `bun:"email" json:"email" encrypt:"true"`
+	Phone     string    `bun:"phone" json:"phone" encrypt:"true"`
+	Address   string    `bun:"address" json:"address" encrypt:"true"`
+	CreatedAt time.Time `bun:"created_at,nullzero,notnull,default:current_timestamp"`
+}
+
+var encryptionService *encryption.Service
+
+// BeforeInsert hook
+func (u *User) BeforeInsert(ctx context.Context, query *bun.InsertQuery) error {
+	return encryptionService.EncryptStruct(u)
+}
+
+// BeforeUpdate hook
+func (u *User) BeforeUpdate(ctx context.Context, query *bun.UpdateQuery) error {
+	return encryptionService.EncryptStruct(u)
+}
+
+// AfterSelect hook
+func (u *User) AfterSelect(ctx context.Context) error {
+	return encryptionService.DecryptStruct(u)
+}
+
+func main() {
+	ctx := context.Background()
+
+	// 1. Initialize encryption service
+	config, err := encryption.NewConfig("my-32-character-secret-key!!")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	encryptionService, err = encryption.NewService(config)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 2. Connect to database
+	dsn := "postgres://user:pass@localhost:5432/mydb?sslmode=disable"
+	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
+	db := bun.NewDB(sqldb, pgdialect.New())
+	defer db.Close()
+
+	// 3. Create table
+	_, err = db.NewCreateTable().Model((*User)(nil)).IfNotExists().Exec(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 4. INSERT - Create user
+	user := &User{
+		Name:    "John Doe",
+		Email:   "john@example.com",
+		Phone:   "+1234567890",
+		Address: "123 Main St, New York, NY",
+	}
+
+	_, err = db.NewInsert().Model(user).Exec(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Created user with ID: %d\n", user.ID)
+
+	// 5. SELECT - Get user (auto-decrypted)
+	fetchedUser := new(User)
+	err = db.NewSelect().Model(fetchedUser).Where("id = ?", user.ID).Scan(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Fetched user: %s, Email: %s\n", fetchedUser.Name, fetchedUser.Email)
+
+	// 6. UPDATE - Update user
+	fetchedUser.Email = "newemail@example.com"
+	_, err = db.NewUpdate().Model(fetchedUser).WherePK().Exec(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("User updated")
+
+	// 7. SELECT - List all users
+	var users []*User
+	err = db.NewSelect().Model(&users).Order("id ASC").Scan(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Found %d users\n", len(users))
+	for _, u := range users {
+		fmt.Printf("  - %s: %s\n", u.Name, u.Email)
+	}
+
+	// 8. DELETE - Delete user
+	_, err = db.NewDelete().Model((*User)(nil)).Where("id = ?", user.ID).Exec(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("User deleted")
+}

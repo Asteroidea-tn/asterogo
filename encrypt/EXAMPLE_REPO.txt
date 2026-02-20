@@ -1,0 +1,138 @@
+package examples
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	encryption "pkg_crypt"
+
+	"github.com/uptrace/bun"
+)
+
+type User struct {
+	bun.BaseModel `bun:"table:users,alias:u"`
+
+	ID        int64     `bun:"id,pk,autoincrement"`
+	Name      string    `bun:"name"`
+	Email     string    `bun:"email" encrypt:"true"`
+	Phone     string    `bun:"phone" encrypt:"true"`
+	CreatedAt time.Time `bun:"created_at,nullzero,notnull,default:current_timestamp"`
+}
+
+var encryptionService *encryption.Service
+
+func (u *User) BeforeInsert(ctx context.Context, query *bun.InsertQuery) error {
+	return encryptionService.EncryptStruct(u)
+}
+
+func (u *User) BeforeUpdate(ctx context.Context, query *bun.UpdateQuery) error {
+	return encryptionService.EncryptStruct(u)
+}
+
+func (u *User) AfterSelect(ctx context.Context) error {
+	return encryptionService.DecryptStruct(u)
+}
+
+// UserRepository - Clean separation of concerns
+type UserRepository struct {
+	db *bun.DB
+}
+
+func NewUserRepository(db *bun.DB) *UserRepository {
+	return &UserRepository{db: db}
+}
+
+func (r *UserRepository) Create(ctx context.Context, user *User) error {
+	_, err := r.db.NewInsert().Model(user).Exec(ctx)
+	return err
+}
+
+func (r *UserRepository) FindByID(ctx context.Context, id int64) (*User, error) {
+	user := new(User)
+	err := r.db.NewSelect().Model(user).Where("id = ?", id).Scan(ctx)
+	return user, err
+}
+
+func (r *UserRepository) FindByEmail(ctx context.Context, email string) (*User, error) {
+	// Note: Searching encrypted fields requires exact match on encrypted value
+	// For searchable encryption, consider tokenization or other techniques
+	user := new(User)
+	err := r.db.NewSelect().Model(user).Where("email = ?", email).Scan(ctx)
+	return user, err
+}
+
+func (r *UserRepository) List(ctx context.Context, limit int) ([]*User, error) {
+	var users []*User
+	err := r.db.NewSelect().
+		Model(&users).
+		Order("created_at DESC").
+		Limit(limit).
+		Scan(ctx)
+	return users, err
+}
+
+func (r *UserRepository) Update(ctx context.Context, user *User) error {
+	_, err := r.db.NewUpdate().Model(user).WherePK().Exec(ctx)
+	return err
+}
+
+func (r *UserRepository) Delete(ctx context.Context, id int64) error {
+	_, err := r.db.NewDelete().Model((*User)(nil)).Where("id = ?", id).Exec(ctx)
+	return err
+}
+
+// Example usage
+func main() {
+	ctx := context.Background()
+
+	// Initialize encryption
+	config, err := encryption.NewConfig("my-32-character-secret-key!!")
+	if err != nil {
+		log.Fatal(err)
+	}
+	encryptionService, _ = encryption.NewService(config)
+
+	// Setup DB (pseudo-code)
+	var db *bun.DB // your actual DB connection
+
+	// Create repository
+	userRepo := NewUserRepository(db)
+
+	// Create user
+	user := &User{
+		Name:  "Alice",
+		Email: "alice@example.com",
+		Phone: "+1234567890",
+	}
+	if err := userRepo.Create(ctx, user); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Created user: %d\n", user.ID)
+
+	// Get user
+	found, err := userRepo.FindByID(ctx, user.ID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Found: %s - %s\n", found.Name, found.Email)
+
+	// Update user
+	found.Email = "newalice@example.com"
+	if err := userRepo.Update(ctx, found); err != nil {
+		log.Fatal(err)
+	}
+
+	// List users
+	users, err := userRepo.List(ctx, 10)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Total users: %d\n", len(users))
+
+	// Delete user
+	if err := userRepo.Delete(ctx, user.ID); err != nil {
+		log.Fatal(err)
+	}
+}

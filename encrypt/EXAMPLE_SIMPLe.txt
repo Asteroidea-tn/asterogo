@@ -1,0 +1,75 @@
+package encrypt
+
+import (
+	"fmt"
+	"log"
+)
+
+// ───────────────────────────────────────────
+// EXAMPMLE USAGE ────────────────────────────
+// ───────────────────────────────────────────
+
+func main() {
+
+	// 2. Create encryption service
+	encryptor, err := NewService([]byte("mysecretkey1234567890123456")) // 32-byte key for AES-256 --- THIS SHOULD BE PASSED FROM COFIG
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 3. Basic string encryption
+	plaintext := "sensitive data"
+	encrypted, err := encryptor.Encrypt(plaintext)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Encrypted: %s\n", encrypted)
+
+	decrypted, err := encryptor.Decrypt(encrypted)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Decrypted: %s\n", decrypted)
+
+	// 4. Struct with tags
+	type Person struct {
+		Name  string `encrypt:"false"`
+		Email string `encrypt:"true"`
+		Phone string `encrypt:"true"`
+	}
+
+	person := &Person{
+		Name:  "John Doe",
+		Email: "john@example.com",
+		Phone: "+1234567890",
+	}
+
+	// Encrypt tagged fields
+	if err := encryptor.EncryptStruct(person); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("After Encryption - Email: %s, Phone: %s\n", person.Email, person.Phone)
+
+	// Decrypt tagged fields
+	if err := encryptor.DecryptStruct(person); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("After Decryption - Email: %s, Phone: %s\n", person.Email, person.Phone)
+
+	// 5. Encrypt specific fields by name
+	person2 := &Person{
+		Name:  "Jane Doe",
+		Email: "jane@example.com",
+		Phone: "+9876543210",
+	}
+
+	if err := encryptor.EncryptFields(person2, "Email", "Phone"); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Encrypted specific fields - Email: %s\n", person2.Email)
+
+	if err := encryptor.DecryptFields(person2, "Email", "Phone"); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Decrypted specific fields - Email: %s\n", person2.Email)
+}

@@ -1,0 +1,17 @@
+package main
+
+func main() {
+
+	cfg := log;ki_m:!-:ger.ConfigLogger{
+		LogLevel:    "debug",
+		LogToFile:   true,
+		LogFileName: "app",
+		Formatted:   true,
+		MaxFileSize: 10, // MB
+		MaxLogFiles: 5,
+		MaxBackups:  3,
+		MaxAge:      30, // days
+	}
+
+	astrolog.InitLogger(cfg)
+}
