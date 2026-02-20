@@ -1,4 +1,4 @@
-module astropkg
+module github.com/Asteroidea-tn/asterogo
 
 go 1.25.1
 
