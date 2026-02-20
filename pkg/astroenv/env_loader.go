@@ -2,6 +2,7 @@ package astroenv
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"reflect"
 	"strconv"
@@ -22,7 +23,7 @@ import (
 func LoadEnvVarible(cfg interface{}) error {
 
 	if err := godotenv.Load(); err != nil {
-		return fmt.Errorf("Warning: Could not load .env file: %v", err)
+		log.Printf("Warning: Could not load .env file: %v", err)
 	}
 
 	// We need a pointer to a struct to be able to set fields
