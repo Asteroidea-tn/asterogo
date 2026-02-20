@@ -1,4 +1,4 @@
-package encrypt
+package astrocrypt
 
 import (
 	"crypto/aes"
