@@ -44,7 +44,7 @@ type FileWriterWithLevel struct {
 }
 
 // WriteLevel implements zerolog.LevelWriter with the correct 2-argument signature.
-// zerolog calls this method instead of Write when the writer implements LevelWriter.
+// Always pass through the return values from Write directly to avoid "short write" errors.
 func (f FileWriterWithLevel) WriteLevel(level zerolog.Level, p []byte) (int, error) {
 	if !f.Formatted {
 		return f.Logger.Write(p)
@@ -68,9 +68,6 @@ func formatLogEntry(level zerolog.Level, p []byte) (string, error) {
 	message, _ := entry["message"].(string)
 	caller, _ := entry["caller"].(string)
 
-	// Extract just the filename without path or extension
-	callerFile := stripCallerPath(caller)
-
 	// Truncate timestamp to millisecond precision (e.g. "2006-01-02 15:04:05.000")
 	formattedTimestamp := timestamp
 	if len(timestamp) >= 22 {
@@ -83,7 +80,7 @@ func formatLogEntry(level zerolog.Level, p []byte) (string, error) {
 	return fmt.Sprintf("%s | %s | %s | %s | %s\n",
 		formattedTimestamp,
 		level.String(),
-		callerFile,
+		caller, // already cleaned by CallerMarshalFunc at the source
 		message,
 		strings.Join(extras, " "),
 	), nil
@@ -91,14 +88,16 @@ func formatLogEntry(level zerolog.Level, p []byte) (string, error) {
 
 // stripCallerPath takes a full caller string (e.g. "pkg/sub/file.go:42")
 // and returns just the filename without the .go extension (e.g. "file:42").
-func stripCallerPath(caller string) string {
-	if caller == "" {
-		return caller
+func stripCallerPath(file string) string {
+	if file == "" {
+		return file
 	}
-	parts := strings.Split(caller, "/")
-	file := parts[len(parts)-1]
-	file = strings.TrimSuffix(file, ".go")
-	return file
+	// Extract just the base filename
+	parts := strings.Split(file, "/")
+	base := parts[len(parts)-1]
+	// Remove .go extension
+	base = strings.TrimSuffix(base, ".go")
+	return base
 }
 
 // collectExtraFields returns key=value pairs for any fields beyond the standard zerolog ones.
@@ -164,6 +163,12 @@ func InitLogger(cfg CofigLogger) {
 		return time.Now().Local()
 	}
 
+	// Override the caller marshaler globally so the caller field is clean
+	// (no full path, no .go extension) for ALL writers before it hits any of them.
+	zerolog.CallerMarshalFunc = func(_ uintptr, file string, line int) string {
+		return fmt.Sprintf("%s:%d", stripCallerPath(file), line)
+	}
+
 	writers := []io.Writer{buildConsoleWriter()}
 
 	if cfg.LogToFile {
@@ -184,16 +189,25 @@ func InitLogger(cfg CofigLogger) {
 	UpdateLogLevel(cfg.LogLevel)
 }
 
+// GetLogger returns the current global logger instance.
+// Always safe to call — returns log.Logger which is initialized to zerolog's default
+// if InitLogger has not been called yet.
+func GetLogger() zerolog.Logger {
+	mu.Lock()
+	defer mu.Unlock()
+	return log.Logger
+}
+
 // buildConsoleWriter creates the styled console writer.
 func buildConsoleWriter() ConsoleWriterWithLevel {
 	return ConsoleWriterWithLevel{
 		ConsoleWriter: zerolog.ConsoleWriter{
 			Out:        os.Stderr,
 			TimeFormat: "2006-01-02 15:04:05.000",
+			// CallerMarshalFunc already cleaned the value — just add color.
 			FormatCaller: func(i interface{}) string {
 				caller, _ := i.(string)
-				file := stripCallerPath(caller)
-				return "\033[34m" + file + "\033[0m"
+				return "\033[34m" + caller + "\033[0m"
 			},
 		},
 	}
@@ -229,7 +243,7 @@ func buildFileWriter(cfg CofigLogger) *FileWriterWithLevel {
 			MaxBackups: 3,
 			MaxAge:     30,
 		},
-		Formatted: cfg.Formatted, // pass the flag so WriteLevel can use it
+		Formatted: cfg.Formatted,
 	}
 }
 
