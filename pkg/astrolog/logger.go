@@ -1,3 +1,4 @@
+// ================ Version : V1.1.2 ===========
 package astrolog
 
 import (
@@ -22,63 +23,61 @@ type CofigLogger struct {
 	LogLevel    string
 	LogToFile   bool
 	LogFileName string
-	Formatted   bool
+	Formatted   bool // true = JSON everywhere, false = pretty everywhere
 	MaxFileSize int
 	MaxLogFiles int
 }
 
+//
 // =============================
 // Console Writer
 // =============================
+//
 
-// ConsoleWriterWithLevel wraps zerolog.ConsoleWriter to satisfy the LevelWriter interface.
+// ConsoleWriterWithLevel wraps zerolog.ConsoleWriter
 type ConsoleWriterWithLevel struct {
 	zerolog.ConsoleWriter
 }
 
-// WriteLevel implements zerolog.LevelWriter for the console.
-// We must return len(p) — not the bytes written by ConsoleWriter — because
-// ConsoleWriter transforms JSON into a human-readable string of a different length.
-// Returning the transformed length causes zerolog to panic with "short write".
 func (c ConsoleWriterWithLevel) WriteLevel(_ zerolog.Level, p []byte) (int, error) {
 	_, err := c.ConsoleWriter.Write(p)
 	return len(p), err
 }
 
+//
 // =============================
 // File Writer
 // =============================
+//
 
-// FileWriterWithLevel wraps lumberjack.Logger to satisfy the LevelWriter interface.
-// When Formatted is enabled, it parses the JSON log entry and writes a human-readable line instead.
 type FileWriterWithLevel struct {
 	*lumberjack.Logger
 	Formatted bool
 }
 
-// WriteLevel implements zerolog.LevelWriter for the file.
-// Always return len(p) back to zerolog to avoid "short write" errors.
 func (f FileWriterWithLevel) WriteLevel(level zerolog.Level, p []byte) (int, error) {
-	if !f.Formatted {
+
+	// Formatted == true  → RAW JSON
+	if f.Formatted {
 		return f.Logger.Write(p)
 	}
+
+	// Formatted == false → Pretty formatted
 	formatted, err := formatLogEntry(level, p)
 	if err != nil {
-		// Fallback to raw JSON if parsing fails
 		return f.Logger.Write(p)
 	}
-	// Write the formatted bytes and report len(p) back to zerolog.
-	// lumberjack.Write returns the number of formatted bytes written, not len(p),
-	// which would cause a "short write". We report len(p) to satisfy zerolog.
+
 	_, err = f.Logger.Write([]byte(formatted))
 	return len(p), err
 }
 
+//
 // =============================
 // Formatting Helpers
 // =============================
+//
 
-// formatLogEntry parses a zerolog JSON entry and returns a human-readable log line.
 func formatLogEntry(level zerolog.Level, p []byte) (string, error) {
 	var entry map[string]interface{}
 	if err := json.Unmarshal(p, &entry); err != nil {
@@ -89,7 +88,6 @@ func formatLogEntry(level zerolog.Level, p []byte) (string, error) {
 	message, _ := entry["message"].(string)
 	caller, _ := entry["caller"].(string)
 
-	// Truncate timestamp to millisecond precision (e.g. "2006-01-02 15:04:05.000")
 	formattedTimestamp := timestamp
 	if len(timestamp) >= 22 {
 		formattedTimestamp = strings.ReplaceAll(timestamp, "T", " ")[:22]
@@ -106,8 +104,6 @@ func formatLogEntry(level zerolog.Level, p []byte) (string, error) {
 	), nil
 }
 
-// stripCallerPath takes a full caller string (e.g. "pkg/sub/file.go:42")
-// and returns just the filename without the .go extension (e.g. "file:42").
 func stripCallerPath(file string) string {
 	if file == "" {
 		return file
@@ -118,7 +114,6 @@ func stripCallerPath(file string) string {
 	return base
 }
 
-// collectExtraFields returns key=value pairs for any fields beyond the standard zerolog ones.
 func collectExtraFields(entry map[string]interface{}) []string {
 	standard := map[string]bool{
 		"time":    true,
@@ -132,15 +127,16 @@ func collectExtraFields(entry map[string]interface{}) []string {
 			extras = append(extras, fmt.Sprintf("%s=%v", k, v))
 		}
 	}
-	sort.Strings(extras) // deterministic output order
+	sort.Strings(extras)
 	return extras
 }
 
+//
 // =============================
 // Run Separator
 // =============================
+//
 
-// writeRunSeparator writes a decorative box banner to the log file marking a new process start.
 func writeRunSeparator(lj *lumberjack.Logger) {
 	now := time.Now()
 
@@ -164,15 +160,17 @@ func writeRunSeparator(lj *lumberjack.Logger) {
 	_, _ = lj.Write([]byte(banner))
 }
 
+//
 // =============================
 // File Cleanup
 // =============================
+//
 
-// deleteOldLogFiles removes the oldest log files in logDir when the count exceeds maxFiles.
 func deleteOldLogFiles(logDir string, maxFiles int) error {
 	if maxFiles <= 0 {
 		return nil
 	}
+
 	entries, err := os.ReadDir(logDir)
 	if err != nil {
 		return err
@@ -189,7 +187,6 @@ func deleteOldLogFiles(logDir string, maxFiles int) error {
 		return nil
 	}
 
-	// Sort oldest first so we can trim from the front
 	sort.Slice(logFiles, func(i, j int) bool {
 		infoI, _ := logFiles[i].Info()
 		infoJ, _ := logFiles[j].Info()
@@ -198,31 +195,46 @@ func deleteOldLogFiles(logDir string, maxFiles int) error {
 
 	toDelete := logFiles[:len(logFiles)-maxFiles]
 	for _, file := range toDelete {
-		if err := os.Remove(filepath.Join(logDir, file.Name())); err != nil {
-			log.Err(err).Msgf("Failed to delete old log file: %s", file.Name())
-		}
+		_ = os.Remove(filepath.Join(logDir, file.Name()))
 	}
+
 	return nil
 }
 
+//
 // =============================
 // Init Logger
 // =============================
+//
 
-// InitLogger sets up the global zerolog logger with console and optional file output.
 func InitLogger(cfg CofigLogger) {
+
 	zerolog.TimeFieldFormat = "2006-01-02 15:04:05.000"
 	zerolog.TimestampFunc = func() time.Time {
 		return time.Now().Local()
 	}
 
-	// Override the caller marshaler globally so the caller field is clean
-	// (no full path, no .go extension) for ALL writers before it hits any of them.
 	zerolog.CallerMarshalFunc = func(_ uintptr, file string, line int) string {
 		return fmt.Sprintf("%s:%d", stripCallerPath(file), line)
 	}
 
-	writers := []io.Writer{buildConsoleWriter()}
+	var writers []io.Writer
+
+	// =============================
+	// Console
+	// =============================
+
+	if cfg.Formatted {
+		// JSON to console
+		writers = append(writers, os.Stderr)
+	} else {
+		// Pretty console
+		writers = append(writers, buildConsoleWriter())
+	}
+
+	// =============================
+	// File
+	// =============================
 
 	if cfg.LogToFile {
 		if fw := buildFileWriter(cfg); fw != nil {
@@ -242,17 +254,17 @@ func InitLogger(cfg CofigLogger) {
 	UpdateLogLevel(cfg.LogLevel)
 }
 
+//
 // =============================
 // Console Builder
 // =============================
+//
 
-// buildConsoleWriter creates the styled console writer.
 func buildConsoleWriter() ConsoleWriterWithLevel {
 	return ConsoleWriterWithLevel{
 		ConsoleWriter: zerolog.ConsoleWriter{
 			Out:        os.Stderr,
 			TimeFormat: "2006-01-02 15:04:05.000",
-			// CallerMarshalFunc already cleaned the value — just add color.
 			FormatCaller: func(i interface{}) string {
 				caller, _ := i.(string)
 				return "\033[34m" + caller + "\033[0m"
@@ -261,34 +273,24 @@ func buildConsoleWriter() ConsoleWriterWithLevel {
 	}
 }
 
+//
 // =============================
 // File Builder
 // =============================
+//
 
-// buildFileWriter creates the rotating file writer, returning nil on setup failure.
-// Files are named by date only (e.g. "app_02-01-2006.log") so that multiple
-// runs on the same day append to the same file instead of creating a new one.
 func buildFileWriter(cfg CofigLogger) *FileWriterWithLevel {
+
 	logDir := "./logs"
 	if err := os.MkdirAll(logDir, os.ModePerm); err != nil {
-		log.Err(err).Msgf("Failed to create log directory: %v", err)
 		return nil
 	}
 
-	if err := deleteOldLogFiles(logDir, cfg.MaxLogFiles); err != nil {
-		log.Err(err).Msgf("Failed to clean old log files: %v", err)
-	}
+	_ = deleteOldLogFiles(logDir, cfg.MaxLogFiles)
 
-	suffix := "_json"
-	if cfg.Formatted {
-		suffix = ""
-	}
-
-	// Date only — same file is reused for every run within the same day
-	filename := fmt.Sprintf("%s_%s%s.log",
+	filename := fmt.Sprintf("%s_%s.log",
 		cfg.LogFileName,
 		time.Now().Format("02-01-2006"),
-		suffix,
 	)
 
 	lj := &lumberjack.Logger{
@@ -298,7 +300,6 @@ func buildFileWriter(cfg CofigLogger) *FileWriterWithLevel {
 		MaxAge:     30,
 	}
 
-	// Write the decorative run separator so each restart is clearly visible in the file
 	writeRunSeparator(lj)
 
 	return &FileWriterWithLevel{
@@ -307,19 +308,18 @@ func buildFileWriter(cfg CofigLogger) *FileWriterWithLevel {
 	}
 }
 
+//
 // =============================
 // Log Level
 // =============================
+//
 
-// GetLogger returns the current global logger instance.
 func GetLogger() zerolog.Logger {
 	mu.Lock()
 	defer mu.Unlock()
 	return log.Logger
 }
 
-// UpdateLogLevel sets the global zerolog level from a string (e.g. "debug", "warn").
-// Defaults to info if the string is unrecognized.
 func UpdateLogLevel(level string) {
 	parsed, err := zerolog.ParseLevel(strings.ToLower(level))
 	if err != nil {

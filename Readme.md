@@ -49,3 +49,12 @@ Asteroidea R&D Department
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
+
+
+---
+
+<div align="center">
+
+**Made with ❤️ by Asteroidea**
+
+</div>
