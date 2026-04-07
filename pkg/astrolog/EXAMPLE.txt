@@ -9,6 +9,7 @@ func main() {
 		Formatted:   true,
 		MaxFileSize: 10, // MB
 		MaxLogFiles: 5,
+		RotationMode: 
 		MaxBackups:  3,
 		MaxAge:      30, // days
 	}

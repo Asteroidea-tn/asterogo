@@ -33,6 +33,10 @@ const (
 	RotationPerRun RotationMode = "perrun"
 )
 
+// CofigLogger is the configuration passed to InitLogger.
+//
+// Use it to control the log level, console formatting, file output, rotation
+// mode, and log retention settings.
 type CofigLogger struct {
 	LogLevel    string
 	LogToFile   bool
@@ -279,15 +283,59 @@ func resolveLogFilename(cfg CofigLogger, logDir string) (string, bool) {
 	}
 }
 
-// =============================
-// Init Logger
-// =============================
-
+// ==============
+//
+//	Init Logger
+//
+// ==============
+//
+// InitLogger configures the global zerolog logger based on the provided CofigLogger.
+// Missing or zero-value fields are filled in by applyDefaults before any setup begins.
+//
+// Default Values :
+//
+//		CofigLogger{
+//				LogLevel:     "info",
+//				LogToFile:    false,
+//				LogFileName:  "app",
+//				Formatted:    false,
+//				RotationMode: RotationPerRun,
+//				MaxFileSize:  5, // MB
+//				MaxLogFiles:  30,
+//				MaxAgeDays:   30,
+//	}
+//
+// What it does, in order:
+//
+//  1. Applies default values to any unset config fields.
+//  2. Sets the global time format and uses local time for all timestamps.
+//  3. Strips the full file path from caller info, keeping only "file:line".
+//  4. Builds the list of output writers (console and/or file).
+//  5. Replaces the global log.Logger with the newly built logger.
+//  6. Sets the global log level (e.g. debug, info, warn, error).
+//
+// Call this once at application startup, before any logging takes place.
+//
+// Example:
+//
+//	astrolog.InitLogger(astrolog.CofigLogger{
+//	    LogLevel:  "debug",
+//	    LogToFile: true,
+//	})
 func InitLogger(cfg CofigLogger) {
+	// Fill in any zero/empty fields with sensible defaults.
+	cfg = applyDefaults(cfg)
+
+	// Use a fixed timestamp layout across all log entries.
 	zerolog.TimeFieldFormat = "2006-01-02 15:04:05.000"
+
+	// Always stamp log entries with the local wall clock, not UTC.
 	zerolog.TimestampFunc = func() time.Time {
 		return time.Now().Local()
 	}
+
+	// Shorten caller info from a full path to "filename:line".
+	// e.g. "/home/user/project/pkg/server.go:42" → "server:42"
 	zerolog.CallerMarshalFunc = func(_ uintptr, file string, line int) string {
 		return fmt.Sprintf("%s:%d", stripCallerPath(file), line)
 	}
@@ -295,28 +343,40 @@ func InitLogger(cfg CofigLogger) {
 	var writers []io.Writer
 
 	// ── Console ──────────────────────────────────────────────────────────────
+	// Formatted == true  → write raw JSON directly to stderr.
+	// Formatted == false → write human-readable, colorized output to stderr.
 	if cfg.Formatted {
-		writers = append(writers, os.Stderr) // raw JSON
+		writers = append(writers, os.Stderr)
 	} else {
-		writers = append(writers, buildConsoleWriter()) // pretty
+		writers = append(writers, buildConsoleWriter())
 	}
 
 	// ── File ─────────────────────────────────────────────────────────────────
+	// Only set up file logging when explicitly requested.
+	// buildFileWriter handles directory creation, rotation, and cleanup;
+	// it returns nil if the file cannot be opened, in which case we skip it
+	// silently and continue with console-only output.
 	if cfg.LogToFile {
 		if fw := buildFileWriter(cfg); fw != nil {
 			writers = append(writers, fw)
 		}
 	}
 
+	// Lock before touching the global logger so concurrent goroutines
+	// that call GetLogger() or UpdateLogLevel() at the same time are safe.
 	mu.Lock()
 	defer mu.Unlock()
 
+	// Wire up the global logger with all active writers, a timestamp field,
+	// and a caller field on every log entry.
 	log.Logger = zerolog.New(zerolog.MultiLevelWriter(writers...)).
 		With().
 		Timestamp().
 		Caller().
 		Logger()
 
+	// Apply the log level last; this is a global zerolog setting that
+	// filters out entries below the chosen severity across all writers.
 	UpdateLogLevel(cfg.LogLevel)
 }
 
@@ -324,6 +384,7 @@ func InitLogger(cfg CofigLogger) {
 // Console Builder
 // =============================
 
+// buildConsoleWriter creates the pretty console writer used when Formatted is false.
 func buildConsoleWriter() ConsoleWriterWithLevel {
 	return ConsoleWriterWithLevel{
 		ConsoleWriter: zerolog.ConsoleWriter{
@@ -337,10 +398,54 @@ func buildConsoleWriter() ConsoleWriterWithLevel {
 	}
 }
 
+// ---------------------------
+// DEFAULT CONFIG
+////////////////////////////
+
+// DefaultConfig returns the default logger configuration used by InitLogger.
+func DefaultConfig() CofigLogger {
+	return CofigLogger{
+		LogLevel:     "info",
+		LogToFile:    false,
+		LogFileName:  "app",
+		Formatted:    false,
+		RotationMode: RotationPerRun,
+		MaxFileSize:  5, // MB
+		MaxLogFiles:  30,
+		MaxAgeDays:   30,
+	}
+}
+
+// applyDefaults fills any zero-value fields in cfg with DefaultConfig values.
+func applyDefaults(cfg CofigLogger) CofigLogger {
+	def := DefaultConfig()
+
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = def.LogLevel
+	}
+	if cfg.LogFileName == "" {
+		cfg.LogFileName = def.LogFileName
+	}
+	if cfg.RotationMode == "" {
+		cfg.RotationMode = def.RotationMode
+	}
+	if cfg.MaxFileSize == 0 {
+		cfg.MaxFileSize = def.MaxFileSize
+	}
+	if cfg.MaxLogFiles == 0 {
+		cfg.MaxLogFiles = def.MaxLogFiles
+	}
+	if cfg.MaxAgeDays == 0 {
+		cfg.MaxAgeDays = def.MaxAgeDays
+	}
+	return cfg
+}
+
 // =============================
 // File Builder
 // =============================
 
+// buildFileWriter creates the file writer and prepares log rotation and cleanup.
 func buildFileWriter(cfg CofigLogger) *FileWriterWithLevel {
 	logDir := "./logs"
 	if err := os.MkdirAll(logDir, os.ModePerm); err != nil {
@@ -397,12 +502,14 @@ func writeRestartSeparator(lj *lumberjack.Logger) {
 // Log Level
 // =============================
 
+// GetLogger returns the current global zerolog logger.
 func GetLogger() zerolog.Logger {
 	mu.Lock()
 	defer mu.Unlock()
 	return log.Logger
 }
 
+// UpdateLogLevel changes the global zerolog level at runtime.
 func UpdateLogLevel(level string) {
 	parsed, err := zerolog.ParseLevel(strings.ToLower(level))
 	if err != nil {
